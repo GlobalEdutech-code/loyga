@@ -21,7 +21,7 @@ function validate(p,restoreCloud=false){
  const ids = new Set();
  const list = p.krathongs.map(k => {
   if(!k || typeof k.id !== 'string' || ids.has(k.id) || !png(k.image) || ![k.x,k.y,k.angle].every(Number.isFinite) || !k.blocks || typeof k.blocks !== 'object') throw Error('ข้อมูลกระทงไม่ถูกต้อง');
-  ids.add(k.id); return {cloudId:restoreCloud&&k.cloudProject===window.LOY_CLOUD?.url&&typeof k.cloudId==='string'?k.cloudId:null,cloudProject:restoreCloud?k.cloudProject:null,id:k.id,name:String(k.name || 'กระทง').slice(0,60),image:k.image,x:k.x,y:k.y,angle:k.angle,speed:Number.isFinite(k.speed)?Math.max(1,Math.min(2000,k.speed)):95,blocks:k.blocks,released:false};
+  ids.add(k.id); return {cloudId:restoreCloud&&k.cloudProject===window.LOY_CLOUD?.url&&typeof k.cloudId==='string'?k.cloudId:null,cloudProject:restoreCloud?k.cloudProject:null,id:k.id,name:String(k.name || 'กระทง').slice(0,60),image:k.image,x:k.x,y:k.y,angle:k.angle,speed:Number.isFinite(k.speed)?Math.max(1,Math.min(2000,k.speed)):95,blocks:k.blocks,released:true};
  });
  return {version:1,drawing:p.drawing || '',krathongs:list,selectedId:ids.has(p.selectedId)?p.selectedId:(list[0]?.id || null)};
 }
@@ -214,7 +214,7 @@ $('deleteKrathong').onclick=async()=>{
 $('save').onclick=()=>{save();};
 $('export').onclick=()=>{rememberBlocks();project.drawing=drawing.toDataURL();const url=URL.createObjectURL(new Blob([JSON.stringify(project,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='loy-krathong.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);message('ส่งออกโปรเจกต์แล้ว');};
 $('import').onclick=()=>$('file').click();
-$('file').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>25000000)throw Error('ไฟล์ใหญ่เกิน 25 MB');const next=validate(JSON.parse(await file.text()));const test=new Blockly.Workspace();try{for(const k of next.krathongs){test.clear();Blockly.serialization.workspaces.load(k.blocks,test);}}finally{test.dispose();}await loadDrawing(next.drawing);runners.clear();poses.clear();sprites.clear();project=next;const importedId=next.selectedId;undo=[];for(const k of project.krathongs)sprites.set(k.id,imageFrom(k.image));loading=true;workspace.clear();loading=false;project.selectedId=null;select(importedId);save();message('นำเข้าแล้ว — กด Run หรือ Float เพื่อเริ่ม');}catch(err){message('นำเข้าไม่สำเร็จ: '+err.message);}e.target.value='';};
+$('file').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>25000000)throw Error('ไฟล์ใหญ่เกิน 25 MB');const next=validate(JSON.parse(await file.text()));const test=new Blockly.Workspace();try{for(const k of next.krathongs){test.clear();Blockly.serialization.workspaces.load(k.blocks,test);}}finally{test.dispose();}await loadDrawing(next.drawing);runners.clear();poses.clear();sprites.clear();project=next;const importedId=next.selectedId;undo=[];for(const k of project.krathongs){sprites.set(k.id,imageFrom(k.image));capture(k);}loading=true;workspace.clear();loading=false;project.selectedId=null;select(importedId);save();message('นำเข้าแล้ว — กระทงเริ่มลอยอัตโนมัติ กด Stop เพื่อหยุด');}catch(err){message('นำเข้าไม่สำเร็จ: '+err.message);}e.target.value='';};
 window.addEventListener('pagehide',()=>{save();cancelAnimationFrame(raf);cloud?.stop();});
 window.addEventListener('pageshow',e=>{if(e.persisted){cloud?.start();lastTime=0;raf=requestAnimationFrame(frame);}});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)save();else lastTime=0;});
@@ -226,8 +226,8 @@ function setupSharedRiver(){
     if(project.krathongs.some(k=>k.cloudId===row.id))continue;
     if(!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(row.image)||row.image.length>300000||![row.x,row.y,row.angle].every(Number.isFinite))continue;
     const id='shared-'+row.id;keep.add(id);
-    const previous=remoteBoats.get(id);
-    remoteBoats.set(id,{id,name:row.name,image:row.image,x:row.x,y:row.y,angle:row.angle,released:row.released,baseX:row.x,baseY:row.y,stamp:Date.parse(row.updated_at)});
+    const previous=remoteBoats.get(id);if(previous?.revision===row.updated_at&&sprites.has(id))continue;
+    remoteBoats.set(id,{id,name:row.name,image:row.image,x:row.x,y:row.y,angle:row.angle,released:true,baseX:row.x,baseY:row.y,revision:row.updated_at,stamp:row.released?Date.parse(row.updated_at):Date.now()});
     if(previous?.image!==row.image||!sprites.has(id))sprites.set(id,imageFrom(row.image));
    }
    for(const id of remoteBoats.keys())if(!keep.has(id)){remoteBoats.delete(id);sprites.delete(id);}
@@ -243,6 +243,6 @@ function updateRemotePoses(){
   k.y=k.baseY;wrap(k);
  }
 }
-async function init(){try{setupBlockly();let raw;try{raw=localStorage.getItem(KEY);if(raw)project=validate(JSON.parse(raw),true);}catch(e){message('อ่านข้อมูลเดิมไม่ได้ เริ่มโปรเจกต์ใหม่ได้ หรือ Import ไฟล์สำรอง');}await loadDrawing(project.drawing);for(const k of project.krathongs)sprites.set(k.id,imageFrom(k.image));const id=project.selectedId;project.selectedId=null;select(id);setupSharedRiver();raf=requestAnimationFrame(frame);}catch(e){message(e.message);}}
+async function init(){try{setupBlockly();let raw;try{raw=localStorage.getItem(KEY);if(raw)project=validate(JSON.parse(raw),true);}catch(e){message('อ่านข้อมูลเดิมไม่ได้ เริ่มโปรเจกต์ใหม่ได้ หรือ Import ไฟล์สำรอง');}await loadDrawing(project.drawing);for(const k of project.krathongs){sprites.set(k.id,imageFrom(k.image));capture(k);}const id=project.selectedId;project.selectedId=null;select(id);setupSharedRiver();raf=requestAnimationFrame(frame);}catch(e){message(e.message);}}
 init();
 })();
