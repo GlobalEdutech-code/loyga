@@ -27,7 +27,7 @@ window.createSharedRiver = function ({onRows, onStatus}) {
   })().finally(()=>{authPromise=null;});
   return authPromise;
  }
- function fields(k){return {name:k.name,image:k.image,x:k.x,y:k.y,angle:k.angle,released:Boolean(k.released)};}
+ function fields(k){return {name:k.name,image:k.image,x:k.x,y:k.y,angle:k.angle,released:Boolean(k.released),speed:k.speed??95,blocks:JSON.parse(JSON.stringify(k.blocks||{})),playback:JSON.parse(JSON.stringify(k.playback||null))};}
  async function poll(){
   if(busy||stopped||document.hidden||!enabled)return;
   busy=true;
@@ -35,14 +35,15 @@ window.createSharedRiver = function ({onRows, onStatus}) {
    // Paged reads avoid silently dropping the river after PostgREST's row limit.
    let rows=[];
    for(let offset=0;offset<2000;offset+=100){
-    const {data,error}=await client.from('loy_krathongs').select('id,name,image,x,y,angle,released,updated_at').eq('room',room).order('created_at',{ascending:true}).order('id',{ascending:true}).range(offset,offset+99);
+    const {data,error}=await client.from('loy_krathongs').select('id,name,image,x,y,angle,released,speed,blocks,playback,updated_at').eq('room',room).order('created_at',{ascending:true}).order('id',{ascending:true}).range(offset,offset+99);
     if(error)throw error;rows.push(...data);if(data.length<100)break;
    }
    onRows(rows);report('แม่น้ำร่วมกัน · '+rows.length+' กระทง');
-  }catch(error){report('เชื่อมต่อแม่น้ำไม่ได้ · งานในเครื่องยังใช้งานได้');}
+  }catch(error){report(error.code==='42703'||error.code==='PGRST204'?'ต้องรัน supabase-program-upgrade.sql ก่อน':'เชื่อมต่อแม่น้ำไม่ได้ · งานในเครื่องยังใช้งานได้');}
   finally{busy=false;}
  }
  async function publish(k){
+  if(k.cloudId&&pending.has(k.cloudId))await pending.get(k.cloudId);
   const user=await identity();
   const id=k.cloudId||crypto.randomUUID();
   const row={id,owner_id:user.id,room,...fields(k)};
@@ -52,7 +53,7 @@ window.createSharedRiver = function ({onRows, onStatus}) {
   poll();return data.id;
  }
  async function update(k){
-  if(!enabled||!k.cloudId||pending.has(k.cloudId)||removing.has(k.cloudId))return;
+  if(!enabled||k.publishing||!k.cloudId||pending.has(k.cloudId)||removing.has(k.cloudId))return;
   const id=k.cloudId;
   const snapshot=fields(k), signature=JSON.stringify(snapshot);
   if(sent.get(id)===signature)return;

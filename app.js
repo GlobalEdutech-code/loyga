@@ -4,13 +4,14 @@ const $ = id => document.getElementById(id);
 const KEY = 'loy-krathong-project-v1', W = 900, H = 800, SW = 110, SH = 75;
 const drawing = $('drawing'), pen = drawing.getContext('2d'), river = $('river'), ctx = river.getContext('2d');
 let project = {version:1,drawing:'',krathongs:[],selectedId:null};
-let workspace, loading = false, erasing = false, candleMode = false, drag = null, stroke = null, undo = [], saveTimer, lastTime = 0;
+let workspace, loading = false, erasing = false, candleMode = false, textMode = false, drag = null, stroke = null, undo = [], saveTimer, lastTime = 0;
 const sprites = new Map(), runners = new Map(), poses = new Map();
 let cloud=null; const remoteBoats=new Map();
 const sceneBoats=()=>[...remoteBoats.values(),...project.krathongs];
-const selected = () => project.krathongs.find(k => k.id === project.selectedId);
+const selected = () => project.krathongs.find(k => k.id === project.selectedId)||remoteBoats.get(project.selectedId);
+const ownSelected=()=>selected()&&!selected().remote;
 const message = text => { $('status').textContent = text; };
-function rememberBlocks(){ if(workspace && selected() && !loading) selected().blocks = Blockly.serialization.workspaces.save(workspace); }
+function rememberBlocks(){ if(workspace && ownSelected() && !loading) selected().blocks = Blockly.serialization.workspaces.save(workspace); }
 function scheduleSave(){ clearTimeout(saveTimer); $('saveState').textContent = 'กำลังบันทึก…'; saveTimer = setTimeout(save,650); }
 function save(){ clearTimeout(saveTimer);if(cloud?.enabled)for(const k of project.krathongs)if(k.cloudId)cloud.update(k); try{ rememberBlocks(); project.drawing = drawing.toDataURL(); localStorage.setItem(KEY,JSON.stringify(project)); $('saveState').textContent = 'บันทึกแล้วในเครื่อง'; }catch(e){$('saveState').textContent = 'บันทึกไม่สำเร็จ'; message('พื้นที่จัดเก็บเต็มหรือถูกปิดกั้น กรุณา Export สำรองงาน');} }
 function imageFrom(url){ const img = new Image(); img.src = url; return img; }
@@ -21,27 +22,27 @@ function validate(p,restoreCloud=false){
  const ids = new Set();
  const list = p.krathongs.map(k => {
   if(!k || typeof k.id !== 'string' || ids.has(k.id) || !png(k.image) || ![k.x,k.y,k.angle].every(Number.isFinite) || !k.blocks || typeof k.blocks !== 'object') throw Error('ข้อมูลกระทงไม่ถูกต้อง');
-  ids.add(k.id); return {cloudId:restoreCloud&&k.cloudProject===window.LOY_CLOUD?.url&&typeof k.cloudId==='string'?k.cloudId:null,cloudProject:restoreCloud?k.cloudProject:null,id:k.id,name:String(k.name || 'กระทง').slice(0,60),image:k.image,x:k.x,y:k.y,angle:k.angle,speed:Number.isFinite(k.speed)?Math.max(1,Math.min(2000,k.speed)):95,blocks:k.blocks,released:true};
+  ids.add(k.id); return {cloudId:restoreCloud&&k.cloudProject===window.LOY_CLOUD?.url&&typeof k.cloudId==='string'?k.cloudId:null,cloudProject:restoreCloud?k.cloudProject:null,id:k.id,name:String(k.name || 'กระทง').slice(0,60),image:k.image,x:k.x,y:k.y,angle:k.angle,speed:Number.isFinite(k.speed)?Math.max(1,Math.min(2000,k.speed)):95,blocks:k.blocks,playback:restoreCloud?LoyMotion.validate(k.playback):null,released:restoreCloud&&k.playback?Boolean(k.released):true};
  });
  return {version:1,drawing:p.drawing || '',krathongs:list,selectedId:ids.has(p.selectedId)?p.selectedId:(list[0]?.id || null)};
 }
 function loadDrawing(url){return new Promise((resolve,reject)=>{if(!url){pen.clearRect(0,0,480,300);resolve();return;} const im = new Image();im.onload=()=>{pen.clearRect(0,0,480,300);pen.drawImage(im,0,0,480,300);resolve();};im.onerror=()=>reject(Error('อ่านภาพวาดไม่ได้'));im.src=url;});}
 function refreshItems(){
  $('items').replaceChildren();
- for(const k of project.krathongs){const b=document.createElement('button');b.className=k.id===project.selectedId?'selected':'';b.setAttribute('aria-pressed',String(k.id===project.selectedId));const im=document.createElement('img');im.src=k.image;im.alt='';b.append(im,document.createTextNode(k.name));b.onclick=()=>select(k.id);$('items').append(b);}
- $('programName').textContent=selected()?.name || 'เลือกกระทงเพื่อเขียนโค้ด';
- for(const id of ['run','stop','reset','float','deleteKrathong']) $(id).disabled=!selected();
+ for(const k of sceneBoats()){const b=document.createElement('button');b.className=k.id===project.selectedId?'selected':'';b.setAttribute('aria-pressed',String(k.id===project.selectedId));const im=document.createElement('img');im.src=k.image;im.alt='';b.append(im,document.createTextNode(k.name+(k.remote?' · ดูโค้ด':'')));b.onclick=()=>select(k.id);$('items').append(b);}
+ $('programName').textContent=(selected()?selected().name+(selected().remote?' · ดูอย่างเดียว':''):'') || 'เลือกกระทงเพื่อเขียนโค้ด';
+ for(const id of ['run','stop','reset','float','deleteKrathong']) $(id).disabled=!ownSelected();
 }
-function select(id){rememberBlocks();project.selectedId=id;loading=true;try{workspace.clear();if(selected())Blockly.serialization.workspaces.load(selected().blocks,workspace);}catch(e){message('โค้ดที่บันทึกไว้ไม่รองรับ กรุณาต่อบล็อกใหม่');}finally{loading=false;}refreshItems();scheduleSave();}
+function select(id){rememberBlocks();project.selectedId=id;loading=true;try{workspace.clear();if(selected())Blockly.serialization.workspaces.load(selected().blocks,workspace);}catch(e){message('โค้ดที่บันทึกไว้ไม่รองรับ กรุณาต่อบล็อกใหม่');}finally{loading=false;}$('blockly').inert=Boolean(selected()?.remote);refreshItems();scheduleSave();}
 function point(e){const r=drawing.getBoundingClientRect();return {x:(e.clientX-r.left)*480/r.width,y:(e.clientY-r.top)*300/r.height};}
 function drawSegment(a,b){pen.save();pen.globalCompositeOperation=erasing?'destination-out':'source-over';pen.strokeStyle=$('color').value;pen.fillStyle=$('color').value;pen.lineWidth=Number($('brush').value);pen.lineCap='round';pen.lineJoin='round';pen.beginPath();pen.moveTo(a.x,a.y);pen.lineTo(b.x,b.y);pen.stroke();if(a.x===b.x&&a.y===b.y){pen.beginPath();pen.arc(a.x,a.y,pen.lineWidth/2,0,Math.PI*2);pen.fill();}pen.restore();}
 function checkpoint(){undo.push(pen.getImageData(0,0,480,300));if(undo.length>25)undo.shift();}
-drawing.onpointerdown=e=>{if(stroke)return;e.preventDefault();checkpoint();if(candleMode){stampCandle(point(e));scheduleSave();return;}drawing.setPointerCapture(e.pointerId);stroke={...point(e),id:e.pointerId};drawSegment(stroke,stroke);};
+drawing.onpointerdown=e=>{if(stroke)return;e.preventDefault();if(textMode){stampText(point(e));return;}checkpoint();if(candleMode){stampCandle(point(e));scheduleSave();return;}drawing.setPointerCapture(e.pointerId);stroke={...point(e),id:e.pointerId};drawSegment(stroke,stroke);};
 drawing.onpointermove=e=>{if(!stroke||stroke.id!==e.pointerId)return;const p=point(e);drawSegment(stroke,p);stroke={...p,id:e.pointerId};};
 function endStroke(e){if(stroke?.id===e.pointerId){stroke=null;scheduleSave();}}
 drawing.onpointerup=endStroke;drawing.onpointercancel=endStroke;drawing.onlostpointercapture=endStroke;
-$('eraser').onclick=()=>{candleMode=false;$('candle').setAttribute('aria-pressed','false');erasing=!erasing;$('eraser').setAttribute('aria-pressed',String(erasing));};
-$('draw').onclick=()=>{candleMode=false;$('candle').setAttribute('aria-pressed','false');erasing=false;$('eraser').setAttribute('aria-pressed','false');drawing.scrollIntoView({block:'center',behavior:'smooth'});};
+$('eraser').onclick=()=>{setTextMode(false);candleMode=false;$('candle').setAttribute('aria-pressed','false');erasing=!erasing;$('eraser').setAttribute('aria-pressed',String(erasing));};
+$('draw').onclick=()=>{setTextMode(false);candleMode=false;$('candle').setAttribute('aria-pressed','false');erasing=false;$('eraser').setAttribute('aria-pressed','false');drawing.scrollIntoView({block:'center',behavior:'smooth'});};
 $('undo').onclick=()=>{if(undo.length){pen.putImageData(undo.pop(),0,0);scheduleSave();}};
 $('clear').onclick=()=>{checkpoint();pen.clearRect(0,0,480,300);scheduleSave();};
 $('importPng').onclick=()=>$('pngFile').click();
@@ -64,6 +65,24 @@ $('pngFile').onchange=async e=>{
  }catch(err){message('นำเข้า PNG ไม่สำเร็จ: '+err.message);}
  finally{if(url)URL.revokeObjectURL(url);e.target.value='';}
 };
+function setTextMode(active){
+ textMode=active;$('addText').setAttribute('aria-pressed',String(active));$('textTools').hidden=!active;
+ if(active){candleMode=false;erasing=false;$('candle').setAttribute('aria-pressed','false');$('eraser').setAttribute('aria-pressed','false');$('textValue').focus();}
+}
+$('addText').onclick=()=>setTextMode(!textMode);
+function stampText(p){
+ const text=$('textValue').value.trim();
+ if(!text){$('textHint').textContent='พิมพ์ข้อความก่อน แล้วแตะบนภาพเพื่อวาง';$('textValue').focus();return;}
+ const size=Math.max(10,Math.min(72,Number($('textSize').value)||24));$('textSize').value=size;
+ pen.save();pen.globalCompositeOperation='source-over';pen.font=size+'px Tahoma, "Segoe UI", sans-serif';pen.textAlign='left';pen.textBaseline='alphabetic';
+ const metrics=pen.measureText(text),width=Math.min(460,metrics.width);
+ const ascent=metrics.actualBoundingBoxAscent||size,descent=metrics.actualBoundingBoxDescent||size*.3;
+ const x=Math.max(10,Math.min(470-width,p.x-width/2));
+ const y=Math.max(ascent+10,Math.min(290-descent,p.y));
+ checkpoint();pen.fillStyle=$('color').value;pen.fillText(text,x,y,460);pen.restore();scheduleSave();
+ $('textHint').textContent='วางข้อความแล้ว แตะเพื่อวางซ้ำ หรือกด Draw เพื่อวาดต่อ (Undo ย้อนกลับได้)';
+ message('เพิ่มข้อความลงภาพแล้ว กด Add Krathong เพื่อนำภาพลงแม่น้ำ');
+}
 function stampCandle(p){
  // Stamp directly into the transparent drawing: undo, export and sprites retain the light.
  const x=Math.max(25,Math.min(455,p.x)),y=Math.max(70,Math.min(290,p.y));
@@ -78,7 +97,7 @@ function stampCandle(p){
  pen.shadowBlur=0;pen.fillStyle='#fff6cb';pen.beginPath();pen.ellipse(x,y-48,2.5,5,0,0,Math.PI*2);pen.fill();pen.restore();
  message('วางเทียนแล้ว แตะเพื่อเพิ่มอีก หรือกด Draw เพื่อวาดต่อ');
 }
-$('candle').onclick=()=>{candleMode=!candleMode;erasing=false;$('eraser').setAttribute('aria-pressed','false');$('candle').setAttribute('aria-pressed',String(candleMode));message(candleMode?'แตะบนภาพตรงฐานเทียนที่ต้องการวาง':'กลับสู่โหมดวาด');};
+$('candle').onclick=()=>{setTextMode(false);candleMode=!candleMode;erasing=false;$('eraser').setAttribute('aria-pressed','false');$('candle').setAttribute('aria-pressed',String(candleMode));message(candleMode?'แตะบนภาพตรงฐานเทียนที่ต้องการวาง':'กลับสู่โหมดวาด');};
 function croppedSprite(){const data=pen.getImageData(0,0,480,300).data;let minX=480,minY=300,maxX=-1,maxY=-1;for(let y=0;y<300;y++)for(let x=0;x<480;x++)if(data[(y*480+x)*4+3]>0){minX=Math.min(x,minX);minY=Math.min(y,minY);maxX=Math.max(x,maxX);maxY=Math.max(y,maxY);}if(maxX<0)return null;const c=document.createElement('canvas');c.width=220;c.height=150;const g=c.getContext('2d');const w=maxX-minX+1,h=maxY-minY+1,s=Math.min(200/w,130/h);g.drawImage(drawing,minX,minY,w,h,(220-w*s)/2,(150-h*s)/2,w*s,h*s);return c.toDataURL();}
 const initialBlocks=()=>({blocks:{languageVersion:0,blocks:[{type:'loy_start',x:35,y:35,next:{block:{type:'loy_move',fields:{VALUE:120}}}}]}});
 $('add').onclick=()=>{const image=croppedSprite();if(!image){message('วาดกระทงก่อนเพิ่มลงแม่น้ำนะ');return;}if(project.krathongs.length>=100){message('เพิ่มได้สูงสุด 100 กระทง');return;}rememberBlocks();const k={id:crypto.randomUUID?crypto.randomUUID():String(Date.now()),name:'กระทง '+(project.krathongs.length+1),image,x:180+Math.random()*530,y:245+Math.random()*100,angle:0,speed:95,blocks:initialBlocks(),released:false};project.krathongs.push(k);sprites.set(k.id,imageFrom(image));select(k.id);message('เพิ่มกระทงแล้ว ลอง Run หรือเริ่มต่อบล็อกได้เลย');};
@@ -98,14 +117,24 @@ function number(b,name,max){const n=Number(b.getFieldValue(name));if(!Number.isF
 function compile(first,depth=0,seen={count:0}){if(depth>30)throw Error('บล็อกซ้อนกันมากเกินไป');const commands=[];for(let b=first;b;b=b.getNextBlock()){if(++seen.count>2000)throw Error('มีบล็อกมากเกินไป');if(!b.isEnabled())continue;const t=b.type;if(t==='loy_speed'){const speed=number(b,'VALUE',2000);if(speed<1)throw Error('ความเร็วต้องอยู่ระหว่าง 1 ถึง 2000');commands.push({type:'speed',value:speed});}else if(['loy_move_up','loy_move_left','loy_move_right','loy_move_down','loy_move','loy_left','loy_right','loy_wait'].includes(t))commands.push({type:t.slice(4),value:number(b,'VALUE',t==='loy_wait'?3600:10000)});else if(t==='controls_repeat_ext'){const n=b.getInputTargetBlock('TIMES');if(!n||n.type!=='math_number')throw Error('repeat ต้องใช้จำนวนครั้งแบบตัวเลข');commands.push({type:'repeat',count:Math.floor(number(n,'NUM',10000)),body:compile(b.getInputTargetBlock('DO'),depth+1,seen)});}else if(t==='loy_forever')commands.push({type:'repeat',count:Infinity,body:compile(b.getInputTargetBlock('DO'),depth+1,seen)});else throw Error('ไม่รองรับบล็อก '+t);}return commands;}
 function* execute(commands){for(const c of commands){if(c.type==='repeat'){for(let i=0;i<c.count;i++){yield {type:'tick'};yield* execute(c.body);}}else yield c;}}
 function capture(k){if(!poses.has(k.id))poses.set(k.id,{x:k.x,y:k.y,angle:k.angle,speed:k.speed??95});}
-function start(){const k=selected();if(!k)return;try{const heads=workspace.getTopBlocks(true).filter(b=>b.type==='loy_start'&&b.isEnabled());if(heads.length!==1)throw Error('ต้องมี when run ที่เปิดใช้งานเพียง 1 บล็อก');const code=compile(heads[0].getNextBlock());capture(k);runners.set(k.id,{iterator:execute(code),action:null});message('กำลังทดลองเส้นทางของ '+k.name);scheduleSave();}catch(e){message(e.message);}}
+function selectedCode(){
+ const heads=workspace.getTopBlocks(true).filter(b=>b.type==='loy_start'&&b.isEnabled());
+ if(!heads.length){if(workspace.getAllBlocks(false).length)throw Error('ต่อคำสั่งใต้ when run ก่อน');return [];}
+ if(heads.length!==1)throw Error('ต้องมี when run เพียง 1 บล็อก');
+ return compile(heads[0].getNextBlock());
+}
+function beginProgram(k,code,floatAfter){
+ capture(k);rememberBlocks();k.released=false;k.playback=LoyMotion.create(code,floatAfter);
+ runners.set(k.id,k.playback);
+}
+function start(){const k=selected();if(!ownSelected())return;try{beginProgram(k,selectedCode(),false);message('กำลังทดลองโค้ดของ '+k.name);scheduleSave();}catch(e){message(e.message);}}
 $('run').onclick=start;
-$('stop').onclick=()=>{const k=selected();if(k){runners.delete(k.id);k.released=false;message('หยุด '+k.name+' แล้ว');scheduleSave();}};
-$('reset').onclick=()=>{const k=selected();if(k){runners.delete(k.id);k.released=false;if(poses.has(k.id))Object.assign(k,poses.get(k.id));poses.delete(k.id);message('คืนตำแหน่งก่อนเริ่มแล้ว');scheduleSave();}};
+$('stop').onclick=()=>{const k=selected();if(ownSelected()){runners.delete(k.id);k.playback=LoyMotion.create([],false);k.playback.done=true;k.released=false;message('หยุด '+k.name+' แล้ว');scheduleSave();}};
+$('reset').onclick=()=>{const k=selected();if(ownSelected()){runners.delete(k.id);k.playback=LoyMotion.create([],false);k.playback.done=true;k.released=false;if(poses.has(k.id))Object.assign(k,poses.get(k.id));poses.delete(k.id);message('คืนตำแหน่งก่อนเริ่มแล้ว');scheduleSave();}};
 $('float').onclick=async()=>{
- const k=selected();if(!k||k.publishing)return;
- capture(k);k.released=true;scheduleSave();
- if(!cloud?.enabled){message('ปล่อย '+k.name+' ในเครื่องแล้ว (ยังไม่เชื่อมแม่น้ำร่วมกัน)');return;}
+ const k=selected();if(!ownSelected()||k.publishing)return;
+ try{beginProgram(k,selectedCode(),true);advance(k,0);scheduleSave();}catch(err){message(err.message);return;}
+ if(!cloud?.enabled){message('เริ่มโค้ดแล้ว จบคำสั่งจะลอยต่อ (โหมดในเครื่อง)');return;}
  k.publishing=true;message('กำลังเผยแพร่กระทงไปยังแม่น้ำร่วมกัน…');
  try{
   const id=await cloud.publish(k);
@@ -116,7 +145,12 @@ $('float').onclick=async()=>{
  finally{k.publishing=false;}
 };
 function wrap(k){const a=k.angle*Math.PI/180,hw=(Math.abs(Math.cos(a))*SW+Math.abs(Math.sin(a))*SH)/2,hh=(Math.abs(Math.sin(a))*SW+Math.abs(Math.cos(a))*SH)/2;if(k.x < -hw)k.x=W+hw;else if(k.x>W+hw)k.x=-hw;if(k.y < -hh)k.y=H+hh;else if(k.y>H+hh)k.y=-hh;}
-function advance(k,dt){const r=runners.get(k.id);if(!r)return;let remaining=dt;for(let budget=0;budget<100;budget++){if(!r.action){const next=r.iterator.next();if(next.done){runners.delete(k.id);scheduleSave();if(k.id===project.selectedId)message('จบคำสั่งแล้ว');break;}const c=next.value;if(c.type==='tick')continue;if(c.type==='speed'){k.speed=c.value;continue;}r.action={...c,left:c.value};}const a=r.action,speed=a.type==='wait'?1:a.type.startsWith('move')?(k.speed??95):150;const amount=Math.min(a.left,remaining*speed);if(a.type==='move'){k.x+=Math.cos(k.angle*Math.PI/180)*amount;k.y+=Math.sin(k.angle*Math.PI/180)*amount;}else if(a.type==='move_up')k.y-=amount;else if(a.type==='move_down')k.y+=amount;else if(a.type==='move_left')k.x-=amount;else if(a.type==='move_right')k.x+=amount;else if(a.type==='left')k.angle=(k.angle-amount)%360;else if(a.type==='right')k.angle=(k.angle+amount)%360;a.left-=amount;remaining-=amount/speed;wrap(k);if(a.left<.000001)r.action=null;else break;if(remaining<=0)break;}}
+function advance(k,dt){
+ const state=runners.get(k.id);if(!state)return dt;
+ const remaining=LoyMotion.advance(k,state,dt,wrap);
+ if(state.done){runners.delete(k.id);if(!k.remote){scheduleSave();if(k.id===project.selectedId)message(state.floatAfter?'จบโค้ดแล้ว กำลังลอยตามน้ำ':'จบคำสั่งแล้ว');}}
+ return remaining;
+}
 function render(time){
  ctx.clearRect(0,0,W,H);
  const sky=ctx.createLinearGradient(0,0,0,H);
@@ -181,13 +215,13 @@ function render(time){
 }
 
 let raf, lastAutosave=0;
-function frame(ms){const dt=Math.min((ms-lastTime)/1000||0,.05);lastTime=ms;for(const k of project.krathongs){try{advance(k,dt);}catch(e){runners.delete(k.id);message('คำสั่งหยุด: '+e.message);}if(k.released){k.x+=dt*17;k.y+=Math.sin(ms/2500+k.x/100)*dt*2;}wrap(k);}updateRemotePoses();render(ms/1000);if(ms-lastAutosave>4000&&(runners.size||project.krathongs.some(k=>k.released))){save();lastAutosave=ms;}raf=requestAnimationFrame(frame);}
+function frame(ms){const dt=Math.min((ms-lastTime)/1000||0,.05);lastTime=ms;for(const k of project.krathongs){let driftDt=dt;try{driftDt=advance(k,dt);}catch(e){runners.delete(k.id);message('คำสั่งหยุด: '+e.message);}if(k.released){k.x+=driftDt*17;}wrap(k);}updateRemotePoses(dt);render(ms/1000);if(ms-lastAutosave>4000&&(runners.size||project.krathongs.some(k=>k.released))){save();lastAutosave=ms;}raf=requestAnimationFrame(frame);}
 function riverPoint(e){const r=river.getBoundingClientRect();return {x:(e.clientX-r.left)*W/r.width,y:(e.clientY-r.top)*H/r.height};}
-function hitKrathong(p){return [...project.krathongs].reverse().find(k=>{const a=-k.angle*Math.PI/180,dx=p.x-k.x,dy=p.y-k.y;return Math.abs(dx*Math.cos(a)-dy*Math.sin(a))<SW/2+8&&Math.abs(dx*Math.sin(a)+dy*Math.cos(a))<SH/2+8;});}
+function hitKrathong(p){return [...sceneBoats()].reverse().find(k=>{const a=-k.angle*Math.PI/180,dx=p.x-k.x,dy=p.y-k.y;return Math.abs(dx*Math.cos(a)-dy*Math.sin(a))<SW/2+8&&Math.abs(dx*Math.sin(a)+dy*Math.cos(a))<SH/2+8;});}
 river.onpointerdown=e=>{
  if(drag || (e.pointerType==='mouse'&&e.button!==0))return;
  const p=riverPoint(e),k=hitKrathong(p);if(!k)return;
- e.preventDefault();select(k.id);runners.delete(k.id);k.released=false;
+ e.preventDefault();select(k.id);if(k.remote){message('โค้ดของ '+k.name+' · ดูอย่างเดียว');return;}runners.delete(k.id);k.playback=LoyMotion.create([],false);k.playback.done=true;k.released=false;
  drag={id:e.pointerId,k,dx:p.x-k.x,dy:p.y-k.y};river.setPointerCapture(e.pointerId);river.style.cursor='grabbing';
  message('ลากกระทงไปวางได้เลย — กด Run หรือ Float เพื่อเริ่มอีกครั้ง');
 };
@@ -200,7 +234,7 @@ river.onpointermove=e=>{
 function endDrag(e){if(!drag||drag.id!==e.pointerId)return;const k=drag.k;drag=null;poses.delete(k.id);river.style.cursor='grab';if(river.hasPointerCapture(e.pointerId))river.releasePointerCapture(e.pointerId);scheduleSave();}
 river.onpointerup=endDrag;river.onpointercancel=endDrag;river.onlostpointercapture=endDrag;
 $('deleteKrathong').onclick=async()=>{
- const k=selected();if(!k)return;
+ const k=selected();if(!ownSelected())return;
  if(k.publishing){message('กำลังเผยแพร่ กรุณารอให้เสร็จก่อนลบ');return;}
  if(k.cloudId){if(!cloud?.enabled){message('ต้องเชื่อมแม่น้ำร่วมกันก่อนลบกระทงที่เผยแพร่');return;}try{await cloud.remove(k.cloudId);remoteBoats.delete('shared-'+k.cloudId);}catch(err){message('ลบออนไลน์ไม่สำเร็จ: '+err.message);return;}}
  const index=project.krathongs.findIndex(item=>item.id===k.id);if(index<0)return;
@@ -214,7 +248,7 @@ $('deleteKrathong').onclick=async()=>{
 $('save').onclick=()=>{save();};
 $('export').onclick=()=>{rememberBlocks();project.drawing=drawing.toDataURL();const url=URL.createObjectURL(new Blob([JSON.stringify(project,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='loy-krathong.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);message('ส่งออกโปรเจกต์แล้ว');};
 $('import').onclick=()=>$('file').click();
-$('file').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>25000000)throw Error('ไฟล์ใหญ่เกิน 25 MB');const next=validate(JSON.parse(await file.text()));const test=new Blockly.Workspace();try{for(const k of next.krathongs){test.clear();Blockly.serialization.workspaces.load(k.blocks,test);}}finally{test.dispose();}await loadDrawing(next.drawing);runners.clear();poses.clear();sprites.clear();project=next;const importedId=next.selectedId;undo=[];for(const k of project.krathongs){sprites.set(k.id,imageFrom(k.image));capture(k);}loading=true;workspace.clear();loading=false;project.selectedId=null;select(importedId);save();message('นำเข้าแล้ว — กระทงเริ่มลอยอัตโนมัติ กด Stop เพื่อหยุด');}catch(err){message('นำเข้าไม่สำเร็จ: '+err.message);}e.target.value='';};
+$('file').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>25000000)throw Error('ไฟล์ใหญ่เกิน 25 MB');const next=validate(JSON.parse(await file.text()));const test=new Blockly.Workspace();try{for(const k of next.krathongs){test.clear();Blockly.serialization.workspaces.load(k.blocks,test);}}finally{test.dispose();}await loadDrawing(next.drawing);runners.clear();poses.clear();sprites.clear();project=next;const importedId=next.selectedId;undo=[];for(const k of project.krathongs){sprites.set(k.id,imageFrom(k.image));capture(k);if(k.playback&&!k.playback.done)runners.set(k.id,k.playback);}loading=true;workspace.clear();loading=false;project.selectedId=null;select(importedId);save();message('นำเข้าแล้ว — กระทงเริ่มลอยอัตโนมัติ กด Stop เพื่อหยุด');}catch(err){message('นำเข้าไม่สำเร็จ: '+err.message);}e.target.value='';};
 window.addEventListener('pagehide',()=>{save();cancelAnimationFrame(raf);cloud?.stop();});
 window.addEventListener('pageshow',e=>{if(e.persisted){cloud?.start();lastTime=0;raf=requestAnimationFrame(frame);}});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)save();else lastTime=0;});
@@ -227,22 +261,29 @@ function setupSharedRiver(){
     if(!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(row.image)||row.image.length>300000||![row.x,row.y,row.angle].every(Number.isFinite))continue;
     const id='shared-'+row.id;keep.add(id);
     const previous=remoteBoats.get(id);if(previous?.revision===row.updated_at&&sprites.has(id))continue;
-    remoteBoats.set(id,{id,name:row.name,image:row.image,x:row.x,y:row.y,angle:row.angle,released:true,baseX:row.x,baseY:row.y,revision:row.updated_at,stamp:row.released?Date.parse(row.updated_at):Date.now()});
+    let playback;try{playback=LoyMotion.validate(row.playback);}catch{continue;}
+    const remote={id,remote:true,name:row.name,image:row.image,x:row.x,y:row.y,angle:row.angle,speed:Math.max(1,Math.min(2000,Number(row.speed)||95)),released:Boolean(row.released),blocks:row.blocks||{},playback,revision:row.updated_at,catchup:Math.min(60,Math.max(0,(Date.now()-Date.parse(row.updated_at))/1000))||0};
+    remoteBoats.set(id,remote);runners.delete(id);if(playback&&!playback.done)runners.set(id,playback);
+    if(project.selectedId===id){loading=true;try{workspace.clear();Blockly.serialization.workspaces.load(remote.blocks,workspace);}catch{workspace.clear();}finally{loading=false;}}
     if(previous?.image!==row.image||!sprites.has(id))sprites.set(id,imageFrom(row.image));
    }
-   for(const id of remoteBoats.keys())if(!keep.has(id)){remoteBoats.delete(id);sprites.delete(id);}
+   for(const id of remoteBoats.keys())if(!keep.has(id)){remoteBoats.delete(id);sprites.delete(id);runners.delete(id);}
+   if(project.selectedId?.startsWith('shared-')&&!remoteBoats.has(project.selectedId))select(null);
+   refreshItems();
   }});
-  if(cloud.enabled){$('float').textContent='Float · แชร์ลงแม่น้ำ';$('float').title='เผยแพร่ภาพกระทงให้ทุกคนเห็น';}cloud.start();
+  if(cloud.enabled){$('float').textContent='Float · แชร์ลงแม่น้ำ';$('float').title='รันโค้ดจนจบแล้วลอยต่อ พร้อมแชร์โค้ดให้ทุกคนดู';}cloud.start();
  }catch(err){$('cloudState').textContent='ตั้งค่าออนไลน์ไม่สำเร็จ';message(err.message);}
 }
-function updateRemotePoses(){
+function updateRemotePoses(dt){
  for(const k of remoteBoats.values()){
-  const seconds=Number.isFinite(k.stamp)?Math.max(0,(Date.now()-k.stamp)/1000):0;
-  const a=k.angle*Math.PI/180,hw=(Math.abs(Math.cos(a))*SW+Math.abs(Math.sin(a))*SH)/2;
-  k.x=k.released?((k.baseX+seconds*17+hw)%(W+2*hw)+(W+2*hw))%(W+2*hw)-hw:k.baseX;
-  k.y=k.baseY;wrap(k);
+  // Bounded catch-up from the server checkpoint, without replaying the whole program.
+  let elapsed=dt+Math.min(k.catchup,2);k.catchup=Math.max(0,k.catchup-2);
+  for(let i=0;i<45&&elapsed>0;i++){
+   const step=Math.min(.05,elapsed);elapsed-=step;
+   try{const drift=advance(k,step);if(k.released)k.x+=17*drift;wrap(k);}catch{runners.delete(k.id);k.released=false;break;}
+  }
  }
 }
-async function init(){try{setupBlockly();let raw;try{raw=localStorage.getItem(KEY);if(raw)project=validate(JSON.parse(raw),true);}catch(e){message('อ่านข้อมูลเดิมไม่ได้ เริ่มโปรเจกต์ใหม่ได้ หรือ Import ไฟล์สำรอง');}await loadDrawing(project.drawing);for(const k of project.krathongs){sprites.set(k.id,imageFrom(k.image));capture(k);}const id=project.selectedId;project.selectedId=null;select(id);setupSharedRiver();raf=requestAnimationFrame(frame);}catch(e){message(e.message);}}
+async function init(){try{setupBlockly();let raw;try{raw=localStorage.getItem(KEY);if(raw)project=validate(JSON.parse(raw),true);}catch(e){message('อ่านข้อมูลเดิมไม่ได้ เริ่มโปรเจกต์ใหม่ได้ หรือ Import ไฟล์สำรอง');}await loadDrawing(project.drawing);for(const k of project.krathongs){sprites.set(k.id,imageFrom(k.image));capture(k);if(k.playback&&!k.playback.done)runners.set(k.id,k.playback);}const id=project.selectedId;project.selectedId=null;select(id);setupSharedRiver();raf=requestAnimationFrame(frame);}catch(e){message(e.message);}}
 init();
 })();

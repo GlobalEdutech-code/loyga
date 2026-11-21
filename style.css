@@ -32,3 +32,4 @@
 #river{touch-action:none}.tools #candle[aria-pressed=true]{background:#edcf8a;color:#322b1d;border-color:#edcf8a}
 .scene-actions .delete-button{color:#ffd1cc;background:#56333b;border-color:#8d5158}.scene-actions .delete-button:hover{background:#75414a}@media(min-width:601px) and (max-width:1150px){.scene-actions{flex-wrap:wrap}.scene-actions button{flex:1 1 28%}}
 #cloudState{font-size:12px;color:#b6dacd;max-width:220px;line-height:1.5}.header-actions{flex-wrap:wrap}
+.text-tools{margin:0 20px 16px;display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;align-items:center;font-size:14px}.text-tools[hidden]{display:none}.text-tools input{min-width:0;width:100%;padding:8px;border:1px solid #52647b;border-radius:7px;background:#0e1b2d;color:#edf3fa}.text-tools p{grid-column:1/-1;margin:0;color:#a7cdbd;font-size:12px;line-height:1.6}
