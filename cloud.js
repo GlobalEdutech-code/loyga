@@ -53,7 +53,7 @@ window.createSharedRiver = function ({onRows, onStatus}) {
   poll();return data.id;
  }
  async function update(k){
-  if(!enabled||k.publishing||!k.cloudId||pending.has(k.cloudId)||removing.has(k.cloudId))return;
+  if(!enabled||k.missionActive||k.publishing||!k.cloudId||pending.has(k.cloudId)||removing.has(k.cloudId))return;
   const id=k.cloudId;
   const snapshot=fields(k), signature=JSON.stringify(snapshot);
   if(sent.get(id)===signature)return;
@@ -75,7 +75,16 @@ window.createSharedRiver = function ({onRows, onStatus}) {
   poll();
   }finally{removing.delete(id);}
  }
+ async function scoreEvent(event){
+  await identity();const {data,error}=await client.rpc('loy_add_score',{p_event:event.id,p_name:event.name,p_points:event.points});
+  if(error)throw error;return Number(data);
+ }
+ async function scores(){
+  const result=await client.from('loy_scores').select('owner_id,player_name,score').order('score',{ascending:false}).order('updated_at',{ascending:true}).limit(10);
+  if(result.error)throw result.error;
+  return result.data;
+ }
  function start(){stopped=false;if(!enabled){report('โหมดในเครื่อง · ยังไม่เชื่อมแม่น้ำร่วมกัน');return;}poll();clearInterval(timer);timer=setInterval(poll,5000);}
  function stop(){stopped=true;clearInterval(timer);}
- return {enabled,start,stop,publish,update,remove,refresh:poll};
+ return {enabled,start,stop,publish,update,remove,scoreEvent,scores,refresh:poll};
 };

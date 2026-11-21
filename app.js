@@ -9,6 +9,8 @@ let project = {version:1,drawing:'',krathongs:[],selectedId:null};
 let workspace, loading = false, erasing = false, candleMode = false, textMode = false, drag = null, stroke = null, undo = [], saveTimer, lastTime = 0;
 const sprites = new Map(), runners = new Map(), poses = new Map();
 let cloud=null; const remoteBoats=new Map();
+let mission={enabled:false,boatId:null,stars:LoyMission.spawn(),round:1,score:0,queue:[],busy:false};
+const SCORE_KEY='loy-mission-'+(window.LOY_CLOUD?.url||'local');
 const sceneBoats=()=>[...remoteBoats.values(),...project.krathongs];
 const selected = () => project.krathongs.find(k => k.id === project.selectedId)||remoteBoats.get(project.selectedId);
 const ownSelected=()=>selected()&&!selected().remote;
@@ -23,6 +25,7 @@ function validate(p,restoreCloud=false){
  if(p.drawing && !png(p.drawing)) throw Error('ภาพวาดไม่ถูกต้อง');
  const ids = new Set();
  const list = p.krathongs.map(k => {
+  if(k?.missionActive&&k.missionReturn&&[k.missionReturn.x,k.missionReturn.y,k.missionReturn.angle].every(Number.isFinite))k={...k,...k.missionReturn,playback:null,released:false};
   if(!k || typeof k.id !== 'string' || ids.has(k.id) || !png(k.image) || ![k.x,k.y,k.angle].every(Number.isFinite) || !k.blocks || typeof k.blocks !== 'object') throw Error('ข้อมูลกระทงไม่ถูกต้อง');
   ids.add(k.id); return {cloudId:restoreCloud&&k.cloudProject===window.LOY_CLOUD?.url&&typeof k.cloudId==='string'?k.cloudId:null,cloudProject:restoreCloud?k.cloudProject:null,id:k.id,name:String(k.name || 'กระทง').slice(0,60),image:k.image,x:k.x,y:k.y,angle:k.angle,speed:Number.isFinite(k.speed)?Math.max(1,Math.min(2000,k.speed)):95,blocks:k.blocks,playback:restoreCloud?LoyMotion.validate(k.playback):null,released:restoreCloud&&k.playback?Boolean(k.released):true};
  });
@@ -150,12 +153,12 @@ function beginProgram(k,code,floatAfter){
  capture(k);rememberBlocks();k.released=false;k.playback=LoyMotion.create(code,floatAfter);
  runners.set(k.id,k.playback);
 }
-function start(){const k=selected();if(!ownSelected())return;try{beginProgram(k,selectedCode(),false);message('กำลังทดลองโค้ดของ '+k.name);scheduleSave();}catch(e){message(e.message);}}
+function start(){const k=selected();if(!ownSelected())return;try{const code=selectedCode();if(mission.enabled&&!startMission(k))return;beginProgram(k,code,false);message('กำลังทดลองโค้ดของ '+k.name);scheduleSave();}catch(e){message(e.message);}}
 $('run').onclick=start;
 $('stop').onclick=()=>{const k=selected();if(ownSelected()){runners.delete(k.id);k.playback=LoyMotion.create([],false);k.playback.done=true;k.released=false;message('หยุด '+k.name+' แล้ว');scheduleSave();}};
-$('reset').onclick=()=>{const k=selected();if(ownSelected()){runners.delete(k.id);k.playback=LoyMotion.create([],false);k.playback.done=true;k.released=false;if(poses.has(k.id))Object.assign(k,poses.get(k.id));poses.delete(k.id);message('คืนตำแหน่งก่อนเริ่มแล้ว');scheduleSave();}};
+$('reset').onclick=()=>{const k=selected();if(ownSelected()){runners.delete(k.id);k.playback=LoyMotion.create([],false);k.playback.done=true;k.released=false;if(mission.enabled)Object.assign(k,LoyMission.START);else if(poses.has(k.id))Object.assign(k,poses.get(k.id));poses.delete(k.id);message('คืนตำแหน่งก่อนเริ่มแล้ว');scheduleSave();}};
 $('float').onclick=async()=>{
- const k=selected();if(!ownSelected()||k.publishing)return;
+ if(mission.enabled){start();return;}const k=selected();if(!ownSelected()||k.publishing)return;
  try{beginProgram(k,selectedCode(),true);advance(k,0);scheduleSave();}catch(err){message(err.message);return;}
  if(!cloud?.enabled){message('เริ่มโค้ดแล้ว จบคำสั่งจะลอยต่อ (โหมดในเครื่อง)');return;}
  k.publishing=true;message('กำลังเผยแพร่กระทงไปยังแม่น้ำร่วมกัน…');
@@ -234,11 +237,12 @@ function render(time){
   ctx.fillStyle='#ab602e';ctx.beginPath();ctx.ellipse(0,12,8,2.5,0,0,Math.PI*2);ctx.fill();
   ctx.fillStyle='#fff2b6';ctx.beginPath();ctx.ellipse(0,9,2,4*flicker,0,0,Math.PI*2);ctx.fill();ctx.restore();
  }
+ drawMission(time);
  for(const k of sceneBoats()){const bob=k.released?Math.sin(time*1.8+k.x*.01)*3:0;ctx.save();ctx.translate(k.x,k.y+bob);ctx.rotate(k.angle*Math.PI/180);if(k.id===project.selectedId){ctx.strokeStyle='#c7edc998';ctx.setLineDash([4,5]);ctx.beginPath();ctx.ellipse(0,0,SW/2+6,SH/2+6,0,0,Math.PI*2);ctx.stroke();}const im=sprites.get(k.id);if(im?.complete&&im.naturalWidth)ctx.drawImage(im,-SW/2,-SH/2,SW,SH);ctx.restore();}
 }
 
 let raf, lastAutosave=0;
-function frame(ms){const dt=Math.min((ms-lastTime)/1000||0,.05);lastTime=ms;for(const k of project.krathongs){let driftDt=dt;try{driftDt=advance(k,dt);}catch(e){runners.delete(k.id);message('คำสั่งหยุด: '+e.message);}if(k.released){k.x+=driftDt*17;}wrap(k);}updateRemotePoses(dt);render(ms/1000);if(ms-lastAutosave>4000&&(runners.size||project.krathongs.some(k=>k.released))){save();lastAutosave=ms;}raf=requestAnimationFrame(frame);}
+function frame(ms){const dt=Math.min((ms-lastTime)/1000||0,.05);lastTime=ms;for(const k of project.krathongs){let driftDt=dt;const previous={x:k.x,y:k.y},collecting=mission.enabled&&mission.boatId===k.id&&runners.has(k.id);try{driftDt=advance(k,dt);}catch(e){runners.delete(k.id);message('คำสั่งหยุด: '+e.message);}if(k.released){k.x+=driftDt*17;}wrap(k);if(collecting)collectMission(k,previous);}updateRemotePoses(dt);render(ms/1000);if(ms-lastAutosave>4000&&(runners.size||project.krathongs.some(k=>k.released))){save();lastAutosave=ms;}raf=requestAnimationFrame(frame);}
 function riverPoint(e){const r=river.getBoundingClientRect();return {x:(e.clientX-r.left)*W/r.width,y:(e.clientY-r.top)*H/r.height};}
 function hitKrathong(p){return [...sceneBoats()].reverse().find(k=>{const a=-k.angle*Math.PI/180,dx=p.x-k.x,dy=p.y-k.y;return Math.abs(dx*Math.cos(a)-dy*Math.sin(a))<SW/2+8&&Math.abs(dx*Math.sin(a)+dy*Math.cos(a))<SH/2+8;});}
 river.onpointerdown=e=>{
@@ -275,6 +279,51 @@ $('file').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if
 window.addEventListener('pagehide',()=>{save();cancelAnimationFrame(raf);cloud?.stop();});
 window.addEventListener('pageshow',e=>{if(e.persisted){cloud?.start();lastTime=0;raf=requestAnimationFrame(frame);}});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)save();else lastTime=0;});
+function saveMission(){try{localStorage.setItem(SCORE_KEY,JSON.stringify({name:$('playerName').value,score:mission.score,queue:mission.queue,stars:mission.stars,round:mission.round}));}catch{$('scoreStatus').textContent='บันทึกคะแนนในเครื่องไม่ได้ อย่าปิดหน้าจนส่งสำเร็จ';}}
+function missionScore(){ $('starScore').textContent=mission.score+mission.queue.reduce((sum,e)=>sum+e.points,0);$('starRound').textContent=mission.round;}
+async function syncScores(){
+ if(!mission.enabled||mission.busy||!cloud?.enabled)return;mission.busy=true;
+ try{
+  while(mission.queue.length){const event=mission.queue[0];mission.score=await cloud.scoreEvent(event);mission.queue.shift();saveMission();missionScore();}
+  const rows=await cloud.scores();$('leaderboard').replaceChildren();
+  for(const row of rows){const li=document.createElement('li');li.textContent=row.player_name+' — ★ '+row.score;$('leaderboard').append(li);}
+  $('scoreStatus').textContent=rows.length?'อันดับอัปเดตแล้ว · Run เริ่มที่ START':'ยังไม่มีคะแนน · เป็นคนแรกได้เลย';
+ }catch{ $('scoreStatus').textContent='ยังส่งคะแนนไม่ได้ ตรวจเน็ตและรัน SQL ภารกิจ คะแนนรอส่งอยู่ในเครื่อง';}
+ finally{mission.busy=false;}
+}
+function setupMission(){
+ try{const saved=JSON.parse(localStorage.getItem(SCORE_KEY)||'null');if(saved){$('playerName').value=String(saved.name||'').slice(0,30);mission.score=Number.isSafeInteger(saved.score)&&saved.score>=0?saved.score:0;mission.queue=Array.isArray(saved.queue)?saved.queue.filter(e=>typeof e.id==='string'&&typeof e.name==='string'&&Number.isInteger(e.points)&&e.points>=0&&e.points<=5):[];if(Array.isArray(saved.stars)&&saved.stars.length>0&&saved.stars.length<=5&&saved.stars.every(s=>Number.isFinite(s.x)&&Number.isFinite(s.y)&&s.x>=200&&s.x<=800&&s.y>=300&&s.y<=600))mission.stars=saved.stars;mission.round=Number.isSafeInteger(saved.round)&&saved.round>0?saved.round:1;}}catch{}
+ if(window.matchMedia('(max-width:600px)').matches)$('missionBoard').querySelector('details').open=false;missionScore();setInterval(()=>{if(!document.hidden)syncScores();},5000);
+}
+function stopMissionBoat(){
+ const k=project.krathongs.find(k=>k.id===mission.boatId);if(!k)return;runners.delete(k.id);k.playback=null;k.released=false;k.missionActive=false;
+ if(mission.original)Object.assign(k,mission.original);k.missionReturn=null;mission.boatId=null;mission.original=null;
+}
+$('missionToggle').onclick=()=>{
+ mission.enabled=!mission.enabled;$('missionToggle').setAttribute('aria-pressed',String(mission.enabled));$('missionBoard').hidden=!mission.enabled;
+ document.querySelector('.river-panel').classList.toggle('mission-on',mission.enabled);
+ if(mission.enabled){message('ใส่ชื่อ เลือกกระทง แล้วกด Run เพื่อเริ่มเก็บดาว');syncScores();}else{stopMissionBoat();scheduleSave();message('กลับสู่แม่น้ำปกติแล้ว');}
+};
+$('playerName').onchange=saveMission;
+function startMission(k){
+ const name=$('playerName').value.trim();if(!name){$('playerName').focus();message('ใส่ชื่อผู้เล่นก่อนกด Run');return false;}
+ if(k.publishing){message('รอแชร์กระทงเสร็จก่อนเริ่มภารกิจ');return false;}
+ if(mission.boatId!==k.id){stopMissionBoat();mission.original={x:k.x,y:k.y,angle:k.angle,speed:k.speed};k.missionReturn={...mission.original};mission.boatId=k.id;}
+ runners.delete(k.id);k.missionActive=true;k.released=false;Object.assign(k,LoyMission.START);k.speed=95;poses.set(k.id,{...LoyMission.START,speed:95});
+ if(!mission.queue.some(e=>e.points===0))mission.queue.push({id:crypto.randomUUID(),name,points:0});saveMission();syncScores();return true;
+}
+function collectMission(k,previous){
+ const result=LoyMission.collect(mission.stars,previous,k);if(!result.points)return;mission.stars=result.stars;
+ mission.queue.push({id:crypto.randomUUID(),name:$('playerName').value.trim()||'ผู้เล่น',points:result.points});
+ if(!mission.stars.length){mission.round++;mission.stars=LoyMission.spawn();message('เก็บครบแล้ว! เริ่มดาวชุดที่ '+mission.round);}
+ missionScore();saveMission();syncScores();
+}
+function drawMission(time){
+ if(!mission.enabled)return;
+ ctx.save();ctx.strokeStyle='#a7e7bd';ctx.lineWidth=2;ctx.setLineDash([7,5]);ctx.beginPath();ctx.ellipse(LoyMission.START.x,LoyMission.START.y,64,45,0,0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle='#c1f5d3';ctx.font='bold 17px Tahoma';ctx.textAlign='center';ctx.fillText('START',LoyMission.START.x,LoyMission.START.y-55);
+ for(const s of mission.stars){ctx.save();ctx.translate(s.x,s.y);ctx.rotate(Math.sin(time*1.5+s.x)*.12);ctx.shadowColor='#ffcc55';ctx.shadowBlur=16;ctx.fillStyle='#ffe18a';ctx.strokeStyle='#fff4c6';ctx.lineWidth=2;ctx.beginPath();for(let i=0;i<10;i++){const a=-Math.PI/2+i*Math.PI/5,r=i%2?8:18;i?ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r):ctx.moveTo(Math.cos(a)*r,Math.sin(a)*r);}ctx.closePath();ctx.fill();ctx.stroke();ctx.restore();}ctx.restore();
+}
+
 function setupSharedRiver(){
  try{
   cloud=window.createSharedRiver({onStatus:text=>{$('cloudState').textContent=text;},onRows:rows=>{
@@ -307,6 +356,6 @@ function updateRemotePoses(dt){
   }
  }
 }
-async function init(){try{setupBlockly();let raw;try{raw=localStorage.getItem(KEY);if(raw)project=validate(JSON.parse(raw),true);}catch(e){message('อ่านข้อมูลเดิมไม่ได้ เริ่มโปรเจกต์ใหม่ได้ หรือ Import ไฟล์สำรอง');}await loadDrawing(project.drawingBase||project.drawing,project.texts);for(const k of project.krathongs){sprites.set(k.id,imageFrom(k.image));capture(k);if(k.playback&&!k.playback.done)runners.set(k.id,k.playback);}const id=project.selectedId;project.selectedId=null;select(id);setupSharedRiver();raf=requestAnimationFrame(frame);}catch(e){message(e.message);}}
+async function init(){try{setupBlockly();let raw;try{raw=localStorage.getItem(KEY);if(raw)project=validate(JSON.parse(raw),true);}catch(e){message('อ่านข้อมูลเดิมไม่ได้ เริ่มโปรเจกต์ใหม่ได้ หรือ Import ไฟล์สำรอง');}await loadDrawing(project.drawingBase||project.drawing,project.texts);for(const k of project.krathongs){sprites.set(k.id,imageFrom(k.image));capture(k);if(k.playback&&!k.playback.done)runners.set(k.id,k.playback);}const id=project.selectedId;project.selectedId=null;select(id);setupSharedRiver();setupMission();raf=requestAnimationFrame(frame);}catch(e){message(e.message);}}
 init();
 })();
