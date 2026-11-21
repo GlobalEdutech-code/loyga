@@ -76,11 +76,11 @@ window.createSharedRiver = function ({onRows, onStatus}) {
   }finally{removing.delete(id);}
  }
  async function scoreEvent(event){
-  await identity();const {data,error}=await client.rpc('loy_add_score',{p_event:event.id,p_name:event.name,p_points:event.points});
+  await identity();const {data,error}=await client.rpc('loy_add_boat_score',{p_boat:event.boatId,p_event:event.id,p_name:event.name,p_points:event.points});
   if(error)throw error;return Number(data);
  }
  async function scores(){
-  const result=await client.from('loy_scores').select('owner_id,player_name,score').order('score',{ascending:false}).order('updated_at',{ascending:true}).limit(10);
+  const result=await client.from('loy_boat_scores').select('owner_id,boat_id,player_name,score').order('score',{ascending:false}).order('updated_at',{ascending:true}).limit(10);
   if(result.error)throw result.error;
   return result.data;
  }

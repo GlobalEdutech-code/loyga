@@ -9,8 +9,8 @@ let project = {version:1,drawing:'',krathongs:[],selectedId:null};
 let workspace, loading = false, erasing = false, candleMode = false, textMode = false, drag = null, stroke = null, undo = [], saveTimer, lastTime = 0;
 const sprites = new Map(), runners = new Map(), poses = new Map();
 let cloud=null; const remoteBoats=new Map();
-let mission={enabled:false,boatId:null,stars:LoyMission.spawn(),round:1,score:0,queue:[],busy:false};
-const SCORE_KEY='loy-mission-'+(window.LOY_CLOUD?.url||'local');
+let mission={enabled:false,boatId:null,stars:LoyMission.spawn(),round:1,scores:{},queue:[],busy:false};
+const SCORE_KEY='loy-mission-boats-v2-'+(window.LOY_CLOUD?.url||'local');
 const sceneBoats=()=>[...remoteBoats.values(),...project.krathongs];
 const selected = () => project.krathongs.find(k => k.id === project.selectedId)||remoteBoats.get(project.selectedId);
 const ownSelected=()=>selected()&&!selected().remote;
@@ -41,7 +41,7 @@ function refreshItems(){
  $('programName').textContent=(selected()?selected().name+(selected().remote?' · ดูอย่างเดียว':''):'') || 'เลือกกระทงเพื่อเขียนโค้ด';
  for(const id of ['run','stop','reset','float','deleteKrathong']) $(id).disabled=!ownSelected();
 }
-function select(id){rememberBlocks();project.selectedId=id;loading=true;try{workspace.clear();if(selected())Blockly.serialization.workspaces.load(selected().blocks,workspace);}catch(e){message('โค้ดที่บันทึกไว้ไม่รองรับ กรุณาต่อบล็อกใหม่');}finally{loading=false;}$('blockly').inert=Boolean(selected()?.remote);refreshItems();scheduleSave();}
+function select(id){if(mission.enabled&&mission.boatId&&mission.boatId!==id)stopMissionBoat();rememberBlocks();project.selectedId=id;loading=true;try{workspace.clear();if(selected())Blockly.serialization.workspaces.load(selected().blocks,workspace);}catch(e){message('โค้ดที่บันทึกไว้ไม่รองรับ กรุณาต่อบล็อกใหม่');}finally{loading=false;}$('blockly').inert=Boolean(selected()?.remote);refreshItems();refreshMissionPlayer();scheduleSave();}
 function point(e){const r=drawing.getBoundingClientRect();return {x:(e.clientX-r.left)*480/r.width,y:(e.clientY-r.top)*300/r.height};}
 function drawSegment(a,b){pen.save();pen.globalCompositeOperation=erasing?'destination-out':'source-over';pen.strokeStyle=$('color').value;pen.fillStyle=$('color').value;pen.lineWidth=Number($('brush').value);pen.lineCap='round';pen.lineJoin='round';pen.beginPath();pen.moveTo(a.x,a.y);pen.lineTo(b.x,b.y);pen.stroke();if(a.x===b.x&&a.y===b.y){pen.beginPath();pen.arc(a.x,a.y,pen.lineWidth/2,0,Math.PI*2);pen.fill();}pen.restore();}
 function checkpoint(){undo.push({pixels:pen.getImageData(0,0,480,300),texts:JSON.parse(JSON.stringify(textObjects))});if(undo.length>25)undo.shift();}
@@ -279,12 +279,15 @@ $('file').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if
 window.addEventListener('pagehide',()=>{save();cancelAnimationFrame(raf);cloud?.stop();});
 window.addEventListener('pageshow',e=>{if(e.persisted){cloud?.start();lastTime=0;raf=requestAnimationFrame(frame);}});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)save();else lastTime=0;});
-function saveMission(){try{localStorage.setItem(SCORE_KEY,JSON.stringify({name:$('playerName').value,score:mission.score,queue:mission.queue,stars:mission.stars,round:mission.round}));}catch{$('scoreStatus').textContent='บันทึกคะแนนในเครื่องไม่ได้ อย่าปิดหน้าจนส่งสำเร็จ';}}
-function missionScore(){ $('starScore').textContent=mission.score+mission.queue.reduce((sum,e)=>sum+e.points,0);$('starRound').textContent=mission.round;}
+function saveMission(){try{localStorage.setItem(SCORE_KEY,JSON.stringify({scores:mission.scores,queue:mission.queue,stars:mission.stars,round:mission.round}));}catch{$('scoreStatus').textContent='บันทึกคะแนนในเครื่องไม่ได้ อย่าปิดหน้าจนส่งสำเร็จ';}}
+function refreshMissionPlayer(){
+ const k=selected();$('playerName').value=k?.name||'';$('playerName').disabled=!ownSelected();missionScore();
+}
+function missionScore(){const id=selected()?.id;$('starScore').textContent=(mission.scores[id]||0)+mission.queue.filter(e=>e.boatId===id).reduce((sum,e)=>sum+e.points,0);$('starRound').textContent=mission.round;}
 async function syncScores(){
  if(!mission.enabled||mission.busy||!cloud?.enabled)return;mission.busy=true;
  try{
-  while(mission.queue.length){const event=mission.queue[0];mission.score=await cloud.scoreEvent(event);mission.queue.shift();saveMission();missionScore();}
+  while(mission.queue.length){const event=mission.queue[0];mission.scores[event.boatId]=await cloud.scoreEvent(event);mission.queue.shift();saveMission();missionScore();}
   const rows=await cloud.scores();$('leaderboard').replaceChildren();
   for(const row of rows){const li=document.createElement('li');li.textContent=row.player_name+' — ★ '+row.score;$('leaderboard').append(li);}
   $('scoreStatus').textContent=rows.length?'อันดับอัปเดตแล้ว · Run เริ่มที่ START':'ยังไม่มีคะแนน · เป็นคนแรกได้เลย';
@@ -292,8 +295,8 @@ async function syncScores(){
  finally{mission.busy=false;}
 }
 function setupMission(){
- try{const saved=JSON.parse(localStorage.getItem(SCORE_KEY)||'null');if(saved){$('playerName').value=String(saved.name||'').slice(0,30);mission.score=Number.isSafeInteger(saved.score)&&saved.score>=0?saved.score:0;mission.queue=Array.isArray(saved.queue)?saved.queue.filter(e=>typeof e.id==='string'&&typeof e.name==='string'&&Number.isInteger(e.points)&&e.points>=0&&e.points<=5):[];if(Array.isArray(saved.stars)&&saved.stars.length>0&&saved.stars.length<=5&&saved.stars.every(s=>Number.isFinite(s.x)&&Number.isFinite(s.y)&&s.x>=200&&s.x<=800&&s.y>=300&&s.y<=600))mission.stars=saved.stars;mission.round=Number.isSafeInteger(saved.round)&&saved.round>0?saved.round:1;}}catch{}
- if(window.matchMedia('(max-width:600px)').matches)$('missionBoard').querySelector('details').open=false;missionScore();setInterval(()=>{if(!document.hidden)syncScores();},5000);
+ try{const saved=JSON.parse(localStorage.getItem(SCORE_KEY)||'null');if(saved){mission.scores={};for(const [id,score] of Object.entries(saved.scores||{}))if(Number.isSafeInteger(score)&&score>=0)mission.scores[id]=score;mission.queue=Array.isArray(saved.queue)?saved.queue.filter(e=>typeof e.boatId==='string'&&typeof e.id==='string'&&typeof e.name==='string'&&Number.isInteger(e.points)&&e.points>=0&&e.points<=5):[];if(Array.isArray(saved.stars)&&saved.stars.length>0&&saved.stars.length<=5&&saved.stars.every(s=>Number.isFinite(s.x)&&Number.isFinite(s.y)&&s.x>=200&&s.x<=800&&s.y>=300&&s.y<=600))mission.stars=saved.stars;mission.round=Number.isSafeInteger(saved.round)&&saved.round>0?saved.round:1;}}catch{}
+ if(window.matchMedia('(max-width:600px)').matches)$('missionBoard').querySelector('details').open=false;refreshMissionPlayer();setInterval(()=>{if(!document.hidden)syncScores();},5000);
 }
 function stopMissionBoat(){
  const k=project.krathongs.find(k=>k.id===mission.boatId);if(!k)return;runners.delete(k.id);k.playback=null;k.released=false;k.missionActive=false;
@@ -302,19 +305,23 @@ function stopMissionBoat(){
 $('missionToggle').onclick=()=>{
  mission.enabled=!mission.enabled;$('missionToggle').setAttribute('aria-pressed',String(mission.enabled));$('missionBoard').hidden=!mission.enabled;
  document.querySelector('.river-panel').classList.toggle('mission-on',mission.enabled);
- if(mission.enabled){message('ใส่ชื่อ เลือกกระทง แล้วกด Run เพื่อเริ่มเก็บดาว');syncScores();}else{stopMissionBoat();scheduleSave();message('กลับสู่แม่น้ำปกติแล้ว');}
+ if(mission.enabled){refreshMissionPlayer();message('ใส่ชื่อ เลือกกระทง แล้วกด Run เพื่อเริ่มเก็บดาว');syncScores();}else{stopMissionBoat();scheduleSave();message('กลับสู่แม่น้ำปกติแล้ว');}
 };
-$('playerName').onchange=saveMission;
+$('playerName').onchange=()=>{
+ const k=selected();if(!ownSelected())return;const name=$('playerName').value.trim();if(!name){$('playerName').value=k.name;return;}
+ k.name=name.slice(0,60);for(const event of mission.queue)if(event.boatId===k.id)event.name=k.name;
+ mission.queue.push({id:crypto.randomUUID(),boatId:k.id,name:k.name,points:0});refreshItems();saveMission();scheduleSave();syncScores();
+};
 function startMission(k){
  const name=$('playerName').value.trim();if(!name){$('playerName').focus();message('ใส่ชื่อผู้เล่นก่อนกด Run');return false;}
- if(k.publishing){message('รอแชร์กระทงเสร็จก่อนเริ่มภารกิจ');return false;}
+ k.name=name.slice(0,60);refreshItems();if(k.publishing){message('รอแชร์กระทงเสร็จก่อนเริ่มภารกิจ');return false;}
  if(mission.boatId!==k.id){stopMissionBoat();mission.original={x:k.x,y:k.y,angle:k.angle,speed:k.speed};k.missionReturn={...mission.original};mission.boatId=k.id;}
  runners.delete(k.id);k.missionActive=true;k.released=false;Object.assign(k,LoyMission.START);k.speed=95;poses.set(k.id,{...LoyMission.START,speed:95});
- if(!mission.queue.some(e=>e.points===0))mission.queue.push({id:crypto.randomUUID(),name,points:0});saveMission();syncScores();return true;
+ if(!mission.queue.some(e=>e.points===0&&e.boatId===k.id))mission.queue.push({id:crypto.randomUUID(),boatId:k.id,name:k.name,points:0});saveMission();syncScores();return true;
 }
 function collectMission(k,previous){
  const result=LoyMission.collect(mission.stars,previous,k);if(!result.points)return;mission.stars=result.stars;
- mission.queue.push({id:crypto.randomUUID(),name:$('playerName').value.trim()||'ผู้เล่น',points:result.points});
+ mission.queue.push({id:crypto.randomUUID(),boatId:k.id,name:k.name,points:result.points});
  if(!mission.stars.length){mission.round++;mission.stars=LoyMission.spawn();message('เก็บครบแล้ว! เริ่มดาวชุดที่ '+mission.round);}
  missionScore();saveMission();syncScores();
 }
