@@ -3,6 +3,8 @@
 const $ = id => document.getElementById(id);
 const KEY = 'loy-krathong-project-v1', W = 900, H = 800, SW = 110, SH = 75;
 const drawing = $('drawing'), pen = drawing.getContext('2d'), river = $('river'), ctx = river.getContext('2d');
+let textObjects=[], selectedText=null, textDrag=null;
+const textCanvas=$('textLayer'),textPen=textCanvas.getContext('2d');
 let project = {version:1,drawing:'',krathongs:[],selectedId:null};
 let workspace, loading = false, erasing = false, candleMode = false, textMode = false, drag = null, stroke = null, undo = [], saveTimer, lastTime = 0;
 const sprites = new Map(), runners = new Map(), poses = new Map();
@@ -13,7 +15,7 @@ const ownSelected=()=>selected()&&!selected().remote;
 const message = text => { $('status').textContent = text; };
 function rememberBlocks(){ if(workspace && ownSelected() && !loading) selected().blocks = Blockly.serialization.workspaces.save(workspace); }
 function scheduleSave(){ clearTimeout(saveTimer); $('saveState').textContent = 'กำลังบันทึก…'; saveTimer = setTimeout(save,650); }
-function save(){ clearTimeout(saveTimer);if(cloud?.enabled)for(const k of project.krathongs)if(k.cloudId)cloud.update(k); try{ rememberBlocks(); project.drawing = drawing.toDataURL(); localStorage.setItem(KEY,JSON.stringify(project)); $('saveState').textContent = 'บันทึกแล้วในเครื่อง'; }catch(e){$('saveState').textContent = 'บันทึกไม่สำเร็จ'; message('พื้นที่จัดเก็บเต็มหรือถูกปิดกั้น กรุณา Export สำรองงาน');} }
+function save(){ clearTimeout(saveTimer);if(cloud?.enabled)for(const k of project.krathongs)if(k.cloudId)cloud.update(k); try{ rememberBlocks(); storeDrawing(); localStorage.setItem(KEY,JSON.stringify(project)); $('saveState').textContent = 'บันทึกแล้วในเครื่อง'; }catch(e){$('saveState').textContent = 'บันทึกไม่สำเร็จ'; message('พื้นที่จัดเก็บเต็มหรือถูกปิดกั้น กรุณา Export สำรองงาน');} }
 function imageFrom(url){ const img = new Image(); img.src = url; return img; }
 function validate(p,restoreCloud=false){
  if(!p || p.version !== 1 || !Array.isArray(p.krathongs) || p.krathongs.length > 100) throw Error('รูปแบบโปรเจกต์ไม่ถูกต้อง (สูงสุด 100 กระทง)');
@@ -24,9 +26,12 @@ function validate(p,restoreCloud=false){
   if(!k || typeof k.id !== 'string' || ids.has(k.id) || !png(k.image) || ![k.x,k.y,k.angle].every(Number.isFinite) || !k.blocks || typeof k.blocks !== 'object') throw Error('ข้อมูลกระทงไม่ถูกต้อง');
   ids.add(k.id); return {cloudId:restoreCloud&&k.cloudProject===window.LOY_CLOUD?.url&&typeof k.cloudId==='string'?k.cloudId:null,cloudProject:restoreCloud?k.cloudProject:null,id:k.id,name:String(k.name || 'กระทง').slice(0,60),image:k.image,x:k.x,y:k.y,angle:k.angle,speed:Number.isFinite(k.speed)?Math.max(1,Math.min(2000,k.speed)):95,blocks:k.blocks,playback:restoreCloud?LoyMotion.validate(k.playback):null,released:restoreCloud&&k.playback?Boolean(k.released):true};
  });
- return {version:1,drawing:p.drawing || '',krathongs:list,selectedId:ids.has(p.selectedId)?p.selectedId:(list[0]?.id || null)};
+ if(p.drawingBase&&!png(p.drawingBase))throw Error('ภาพพื้นหลังไม่ถูกต้อง');
+ const texts=Array.isArray(p.texts)&&p.drawingBase?p.texts:[];
+ if(texts.length>80||texts.some(t=>!t||typeof t.id!=='string'||typeof t.text!=='string'||t.text.length>80||!/^#[0-9a-f]{6}$/i.test(t.color)||![t.x,t.y,t.size].every(Number.isFinite)||t.x<0||t.x>480||t.y<0||t.y>300||t.size<10||t.size>72))throw Error('ข้อมูลข้อความไม่ถูกต้อง');
+ return {version:1,drawing:p.drawing || '',drawingBase:p.drawingBase||'',texts,krathongs:list,selectedId:ids.has(p.selectedId)?p.selectedId:(list[0]?.id || null)};
 }
-function loadDrawing(url){return new Promise((resolve,reject)=>{if(!url){pen.clearRect(0,0,480,300);resolve();return;} const im = new Image();im.onload=()=>{pen.clearRect(0,0,480,300);pen.drawImage(im,0,0,480,300);resolve();};im.onerror=()=>reject(Error('อ่านภาพวาดไม่ได้'));im.src=url;});}
+function loadDrawing(url,texts=[]){textObjects=JSON.parse(JSON.stringify(texts));selectedText=null;renderTexts();return new Promise((resolve,reject)=>{if(!url){pen.clearRect(0,0,480,300);resolve();return;} const im = new Image();im.onload=()=>{pen.clearRect(0,0,480,300);pen.drawImage(im,0,0,480,300);resolve();};im.onerror=()=>reject(Error('อ่านภาพวาดไม่ได้'));im.src=url;});}
 function refreshItems(){
  $('items').replaceChildren();
  for(const k of sceneBoats()){const b=document.createElement('button');b.className=k.id===project.selectedId?'selected':'';b.setAttribute('aria-pressed',String(k.id===project.selectedId));const im=document.createElement('img');im.src=k.image;im.alt='';b.append(im,document.createTextNode(k.name+(k.remote?' · ดูโค้ด':'')));b.onclick=()=>select(k.id);$('items').append(b);}
@@ -36,15 +41,15 @@ function refreshItems(){
 function select(id){rememberBlocks();project.selectedId=id;loading=true;try{workspace.clear();if(selected())Blockly.serialization.workspaces.load(selected().blocks,workspace);}catch(e){message('โค้ดที่บันทึกไว้ไม่รองรับ กรุณาต่อบล็อกใหม่');}finally{loading=false;}$('blockly').inert=Boolean(selected()?.remote);refreshItems();scheduleSave();}
 function point(e){const r=drawing.getBoundingClientRect();return {x:(e.clientX-r.left)*480/r.width,y:(e.clientY-r.top)*300/r.height};}
 function drawSegment(a,b){pen.save();pen.globalCompositeOperation=erasing?'destination-out':'source-over';pen.strokeStyle=$('color').value;pen.fillStyle=$('color').value;pen.lineWidth=Number($('brush').value);pen.lineCap='round';pen.lineJoin='round';pen.beginPath();pen.moveTo(a.x,a.y);pen.lineTo(b.x,b.y);pen.stroke();if(a.x===b.x&&a.y===b.y){pen.beginPath();pen.arc(a.x,a.y,pen.lineWidth/2,0,Math.PI*2);pen.fill();}pen.restore();}
-function checkpoint(){undo.push(pen.getImageData(0,0,480,300));if(undo.length>25)undo.shift();}
-drawing.onpointerdown=e=>{if(stroke)return;e.preventDefault();if(textMode){stampText(point(e));return;}checkpoint();if(candleMode){stampCandle(point(e));scheduleSave();return;}drawing.setPointerCapture(e.pointerId);stroke={...point(e),id:e.pointerId};drawSegment(stroke,stroke);};
-drawing.onpointermove=e=>{if(!stroke||stroke.id!==e.pointerId)return;const p=point(e);drawSegment(stroke,p);stroke={...p,id:e.pointerId};};
-function endStroke(e){if(stroke?.id===e.pointerId){stroke=null;scheduleSave();}}
+function checkpoint(){undo.push({pixels:pen.getImageData(0,0,480,300),texts:JSON.parse(JSON.stringify(textObjects))});if(undo.length>25)undo.shift();}
+drawing.onpointerdown=e=>{if(stroke||textDrag)return;e.preventDefault();const p=point(e);const hit=!erasing&&!candleMode&&hitText(p);if(hit){checkpoint();selectText(hit);textDrag={id:e.pointerId,item:hit,dx:p.x-hit.x,dy:p.y-hit.y};drawing.setPointerCapture(e.pointerId);return;}if(textMode){stampText(point(e));return;}checkpoint();if(candleMode){stampCandle(point(e));scheduleSave();return;}drawing.setPointerCapture(e.pointerId);stroke={...point(e),id:e.pointerId};drawSegment(stroke,stroke);};
+drawing.onpointermove=e=>{if(textDrag?.id===e.pointerId){const p=point(e);textDrag.item.x=p.x-textDrag.dx;textDrag.item.y=p.y-textDrag.dy;constrainText(textDrag.item);renderTexts();return;}if(!stroke||stroke.id!==e.pointerId)return;const p=point(e);drawSegment(stroke,p);stroke={...p,id:e.pointerId};};
+function endStroke(e){if(textDrag?.id===e.pointerId){textDrag=null;scheduleSave();}if(stroke?.id===e.pointerId){stroke=null;scheduleSave();}}
 drawing.onpointerup=endStroke;drawing.onpointercancel=endStroke;drawing.onlostpointercapture=endStroke;
 $('eraser').onclick=()=>{setTextMode(false);candleMode=false;$('candle').setAttribute('aria-pressed','false');erasing=!erasing;$('eraser').setAttribute('aria-pressed',String(erasing));};
 $('draw').onclick=()=>{setTextMode(false);candleMode=false;$('candle').setAttribute('aria-pressed','false');erasing=false;$('eraser').setAttribute('aria-pressed','false');drawing.scrollIntoView({block:'center',behavior:'smooth'});};
-$('undo').onclick=()=>{if(undo.length){pen.putImageData(undo.pop(),0,0);scheduleSave();}};
-$('clear').onclick=()=>{checkpoint();pen.clearRect(0,0,480,300);scheduleSave();};
+$('undo').onclick=()=>{if(undo.length){const prior=undo.pop();pen.putImageData(prior.pixels,0,0);textObjects=prior.texts;selectedText=null;renderTexts();scheduleSave();}};
+$('clear').onclick=()=>{checkpoint();pen.clearRect(0,0,480,300);textObjects=[];selectedText=null;renderTexts();scheduleSave();};
 $('importPng').onclick=()=>$('pngFile').click();
 $('pngFile').onchange=async e=>{
  const file=e.target.files[0];if(!file)return;
@@ -57,7 +62,7 @@ $('pngFile').onchange=async e=>{
   const img=new Image();
   await new Promise((resolve,reject)=>{img.onload=resolve;img.onerror=()=>reject(Error('อ่านภาพ PNG ไม่ได้'));img.src=url;});
   if(img.naturalWidth*img.naturalHeight>40000000)throw Error('ภาพมีความละเอียดสูงเกินไป (สูงสุด 40 ล้านพิกเซล)');
-  checkpoint();pen.clearRect(0,0,480,300);
+  checkpoint();pen.clearRect(0,0,480,300);textObjects=[];selectedText=null;renderTexts();
   const scale=Math.min(480/img.naturalWidth,300/img.naturalHeight);
   const w=img.naturalWidth*scale,h=img.naturalHeight*scale;
   pen.drawImage(img,(480-w)/2,(300-h)/2,w,h);
@@ -65,24 +70,42 @@ $('pngFile').onchange=async e=>{
  }catch(err){message('นำเข้า PNG ไม่สำเร็จ: '+err.message);}
  finally{if(url)URL.revokeObjectURL(url);e.target.value='';}
 };
-function setTextMode(active){
+function textBounds(t){
+ textPen.font=t.size+'px Tahoma, "Segoe UI", sans-serif';const m=textPen.measureText(t.text||' ');
+ return {width:Math.min(460,m.width),up:m.actualBoundingBoxAscent||t.size,down:Math.max(4,m.actualBoundingBoxDescent||t.size*.2)};
+}
+function constrainText(t){const b=textBounds(t);t.x=Math.max(6,Math.min(474-b.width,t.x));t.y=Math.max(b.up+6,Math.min(294-b.down,t.y));}
+function paintTexts(target){for(const t of textObjects){target.save();target.font=t.size+'px Tahoma, "Segoe UI", sans-serif';target.textBaseline='alphabetic';target.fillStyle=t.color;target.fillText(t.text,t.x,t.y,460);target.restore();}}
+function renderTexts(){
+ textPen.clearRect(0,0,480,300);paintTexts(textPen);
+ const t=textObjects.find(t=>t.id===selectedText);
+ if(t){const b=textBounds(t);textPen.save();textPen.strokeStyle='#2785c4';textPen.lineWidth=1;textPen.setLineDash([4,3]);textPen.strokeRect(t.x-4,t.y-b.up-4,b.width+8,b.up+b.down+8);textPen.restore();}
+ $('deleteText').disabled=!t;
+}
+function composedDrawing(){const c=document.createElement('canvas');c.width=480;c.height=300;const g=c.getContext('2d');g.drawImage(drawing,0,0);paintTexts(g);return c;}
+function storeDrawing(){project.drawing=composedDrawing().toDataURL();project.drawingBase=drawing.toDataURL();project.texts=JSON.parse(JSON.stringify(textObjects));}
+function hitText(p){return [...textObjects].reverse().find(t=>{const b=textBounds(t);return p.x>=t.x-6&&p.x<=t.x+b.width+6&&p.y>=t.y-b.up-6&&p.y<=t.y+b.down+6;});}
+function setTextMode(active,focus=true){
  textMode=active;$('addText').setAttribute('aria-pressed',String(active));$('textTools').hidden=!active;
- if(active){candleMode=false;erasing=false;$('candle').setAttribute('aria-pressed','false');$('eraser').setAttribute('aria-pressed','false');$('textValue').focus();}
+ if(active){candleMode=false;erasing=false;$('candle').setAttribute('aria-pressed','false');$('eraser').setAttribute('aria-pressed','false');if(focus)$('textValue').focus();}
+ else{selectedText=null;renderTexts();}
 }
+function selectText(t){selectedText=t.id;setTextMode(true,false);$('textValue').value=t.text;$('textSize').value=t.size;$('color').value=t.color;renderTexts();$('textHint').textContent='ลากกรอบข้อความเพื่อย้าย หรือแก้ข้อความ ขนาด และสีได้เลย';}
 $('addText').onclick=()=>setTextMode(!textMode);
-function stampText(p){
- const text=$('textValue').value.trim();
- if(!text){$('textHint').textContent='พิมพ์ข้อความก่อน แล้วแตะบนภาพเพื่อวาง';$('textValue').focus();return;}
- const size=Math.max(10,Math.min(72,Number($('textSize').value)||24));$('textSize').value=size;
- pen.save();pen.globalCompositeOperation='source-over';pen.font=size+'px Tahoma, "Segoe UI", sans-serif';pen.textAlign='left';pen.textBaseline='alphabetic';
- const metrics=pen.measureText(text),width=Math.min(460,metrics.width);
- const ascent=metrics.actualBoundingBoxAscent||size,descent=metrics.actualBoundingBoxDescent||size*.3;
- const x=Math.max(10,Math.min(470-width,p.x-width/2));
- const y=Math.max(ascent+10,Math.min(290-descent,p.y));
- checkpoint();pen.fillStyle=$('color').value;pen.fillText(text,x,y,460);pen.restore();scheduleSave();
- $('textHint').textContent='วางข้อความแล้ว แตะเพื่อวางซ้ำ หรือกด Draw เพื่อวาดต่อ (Undo ย้อนกลับได้)';
- message('เพิ่มข้อความลงภาพแล้ว กด Add Krathong เพื่อนำภาพลงแม่น้ำ');
+$('newText').onclick=()=>{selectedText=null;$('textValue').value='';renderTexts();$('textValue').focus();$('textHint').textContent='พิมพ์ข้อความใหม่ แล้วแตะพื้นที่ว่างบนภาพเพื่อวาง';};
+$('deleteText').onclick=()=>{if(!selectedText)return;checkpoint();textObjects=textObjects.filter(t=>t.id!==selectedText);selectedText=null;renderTexts();scheduleSave();};
+for(const id of ['textValue','textSize','color']){
+ $(id).addEventListener('focus',()=>{if(selectedText)checkpoint();});
+ $(id).addEventListener('input',()=>{const t=textObjects.find(t=>t.id===selectedText);if(!t)return;t.text=$('textValue').value.slice(0,80);t.size=Math.max(10,Math.min(72,Number($('textSize').value)||24));t.color=$('color').value;constrainText(t);renderTexts();scheduleSave();});
 }
+function stampText(p){
+ if(selectedText){selectedText=null;renderTexts();return;}
+ const text=$('textValue').value.trim();if(!text){$('textValue').focus();return;}
+ if(textObjects.length>=80){message('เพิ่มข้อความได้สูงสุด 80 ชิ้น');return;}
+ checkpoint();const t={id:crypto.randomUUID(),text,size:Math.max(10,Math.min(72,Number($('textSize').value)||24)),color:$('color').value,x:p.x,y:p.y};
+ t.x-=textBounds(t).width/2;constrainText(t);textObjects.push(t);selectText(t);scheduleSave();
+}
+
 function stampCandle(p){
  // Stamp directly into the transparent drawing: undo, export and sprites retain the light.
  const x=Math.max(25,Math.min(455,p.x)),y=Math.max(70,Math.min(290,p.y));
@@ -98,7 +121,7 @@ function stampCandle(p){
  message('วางเทียนแล้ว แตะเพื่อเพิ่มอีก หรือกด Draw เพื่อวาดต่อ');
 }
 $('candle').onclick=()=>{setTextMode(false);candleMode=!candleMode;erasing=false;$('eraser').setAttribute('aria-pressed','false');$('candle').setAttribute('aria-pressed',String(candleMode));message(candleMode?'แตะบนภาพตรงฐานเทียนที่ต้องการวาง':'กลับสู่โหมดวาด');};
-function croppedSprite(){const data=pen.getImageData(0,0,480,300).data;let minX=480,minY=300,maxX=-1,maxY=-1;for(let y=0;y<300;y++)for(let x=0;x<480;x++)if(data[(y*480+x)*4+3]>0){minX=Math.min(x,minX);minY=Math.min(y,minY);maxX=Math.max(x,maxX);maxY=Math.max(y,maxY);}if(maxX<0)return null;const c=document.createElement('canvas');c.width=220;c.height=150;const g=c.getContext('2d');const w=maxX-minX+1,h=maxY-minY+1,s=Math.min(200/w,130/h);g.drawImage(drawing,minX,minY,w,h,(220-w*s)/2,(150-h*s)/2,w*s,h*s);return c.toDataURL();}
+function croppedSprite(){const composite=composedDrawing();const data=composite.getContext("2d").getImageData(0,0,480,300).data;let minX=480,minY=300,maxX=-1,maxY=-1;for(let y=0;y<300;y++)for(let x=0;x<480;x++)if(data[(y*480+x)*4+3]>0){minX=Math.min(x,minX);minY=Math.min(y,minY);maxX=Math.max(x,maxX);maxY=Math.max(y,maxY);}if(maxX<0)return null;const c=document.createElement('canvas');c.width=220;c.height=150;const g=c.getContext('2d');const w=maxX-minX+1,h=maxY-minY+1,s=Math.min(200/w,130/h);g.drawImage(composite,minX,minY,w,h,(220-w*s)/2,(150-h*s)/2,w*s,h*s);return c.toDataURL();}
 const initialBlocks=()=>({blocks:{languageVersion:0,blocks:[{type:'loy_start',x:35,y:35,next:{block:{type:'loy_move',fields:{VALUE:120}}}}]}});
 $('add').onclick=()=>{const image=croppedSprite();if(!image){message('วาดกระทงก่อนเพิ่มลงแม่น้ำนะ');return;}if(project.krathongs.length>=100){message('เพิ่มได้สูงสุด 100 กระทง');return;}rememberBlocks();const k={id:crypto.randomUUID?crypto.randomUUID():String(Date.now()),name:'กระทง '+(project.krathongs.length+1),image,x:180+Math.random()*530,y:245+Math.random()*100,angle:0,speed:95,blocks:initialBlocks(),released:false};project.krathongs.push(k);sprites.set(k.id,imageFrom(image));select(k.id);message('เพิ่มกระทงแล้ว ลอง Run หรือเริ่มต่อบล็อกได้เลย');};
 function setupBlockly(){
@@ -246,9 +269,9 @@ $('deleteKrathong').onclick=async()=>{
  save();message('ลบ '+k.name+' แล้ว');
 };
 $('save').onclick=()=>{save();};
-$('export').onclick=()=>{rememberBlocks();project.drawing=drawing.toDataURL();const url=URL.createObjectURL(new Blob([JSON.stringify(project,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='loy-krathong.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);message('ส่งออกโปรเจกต์แล้ว');};
+$('export').onclick=()=>{rememberBlocks();storeDrawing();const url=URL.createObjectURL(new Blob([JSON.stringify(project,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='loy-krathong.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);message('ส่งออกโปรเจกต์แล้ว');};
 $('import').onclick=()=>$('file').click();
-$('file').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>25000000)throw Error('ไฟล์ใหญ่เกิน 25 MB');const next=validate(JSON.parse(await file.text()));const test=new Blockly.Workspace();try{for(const k of next.krathongs){test.clear();Blockly.serialization.workspaces.load(k.blocks,test);}}finally{test.dispose();}await loadDrawing(next.drawing);runners.clear();poses.clear();sprites.clear();project=next;const importedId=next.selectedId;undo=[];for(const k of project.krathongs){sprites.set(k.id,imageFrom(k.image));capture(k);if(k.playback&&!k.playback.done)runners.set(k.id,k.playback);}loading=true;workspace.clear();loading=false;project.selectedId=null;select(importedId);save();message('นำเข้าแล้ว — กระทงเริ่มลอยอัตโนมัติ กด Stop เพื่อหยุด');}catch(err){message('นำเข้าไม่สำเร็จ: '+err.message);}e.target.value='';};
+$('file').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>25000000)throw Error('ไฟล์ใหญ่เกิน 25 MB');const next=validate(JSON.parse(await file.text()));const test=new Blockly.Workspace();try{for(const k of next.krathongs){test.clear();Blockly.serialization.workspaces.load(k.blocks,test);}}finally{test.dispose();}await loadDrawing(next.drawingBase||next.drawing,next.texts);runners.clear();poses.clear();sprites.clear();project=next;const importedId=next.selectedId;undo=[];for(const k of project.krathongs){sprites.set(k.id,imageFrom(k.image));capture(k);if(k.playback&&!k.playback.done)runners.set(k.id,k.playback);}loading=true;workspace.clear();loading=false;project.selectedId=null;select(importedId);save();message('นำเข้าแล้ว — กระทงเริ่มลอยอัตโนมัติ กด Stop เพื่อหยุด');}catch(err){message('นำเข้าไม่สำเร็จ: '+err.message);}e.target.value='';};
 window.addEventListener('pagehide',()=>{save();cancelAnimationFrame(raf);cloud?.stop();});
 window.addEventListener('pageshow',e=>{if(e.persisted){cloud?.start();lastTime=0;raf=requestAnimationFrame(frame);}});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)save();else lastTime=0;});
@@ -284,6 +307,6 @@ function updateRemotePoses(dt){
   }
  }
 }
-async function init(){try{setupBlockly();let raw;try{raw=localStorage.getItem(KEY);if(raw)project=validate(JSON.parse(raw),true);}catch(e){message('อ่านข้อมูลเดิมไม่ได้ เริ่มโปรเจกต์ใหม่ได้ หรือ Import ไฟล์สำรอง');}await loadDrawing(project.drawing);for(const k of project.krathongs){sprites.set(k.id,imageFrom(k.image));capture(k);if(k.playback&&!k.playback.done)runners.set(k.id,k.playback);}const id=project.selectedId;project.selectedId=null;select(id);setupSharedRiver();raf=requestAnimationFrame(frame);}catch(e){message(e.message);}}
+async function init(){try{setupBlockly();let raw;try{raw=localStorage.getItem(KEY);if(raw)project=validate(JSON.parse(raw),true);}catch(e){message('อ่านข้อมูลเดิมไม่ได้ เริ่มโปรเจกต์ใหม่ได้ หรือ Import ไฟล์สำรอง');}await loadDrawing(project.drawingBase||project.drawing,project.texts);for(const k of project.krathongs){sprites.set(k.id,imageFrom(k.image));capture(k);if(k.playback&&!k.playback.done)runners.set(k.id,k.playback);}const id=project.selectedId;project.selectedId=null;select(id);setupSharedRiver();raf=requestAnimationFrame(frame);}catch(e){message(e.message);}}
 init();
 })();
